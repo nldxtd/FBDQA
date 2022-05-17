@@ -1,0 +1,14 @@
+certifi==2020.6.20
+cycler==0.11.0
+fonttools==4.33.3
+kiwisolver==1.4.2
+matplotlib==3.5.2
+mkl-fft==1.3.1
+mkl-random @ file:///opt/concourse/worker/volumes/live/a9eca864-069c-4240-73c8-4e51b036a10d/volume/mkl_random_1639994047876/work
+mkl-service==2.4.0
+numpy @ file:///opt/concourse/worker/volumes/live/b4f261d1-be64-4b96-479d-46bad30378e0/volume/numpy_and_numpy_base_1650959341665/work
+packaging==21.3
+Pillow==9.1.0
+pyparsing==3.0.9
+python-dateutil==2.8.2
+six @ file:///tmp/build/80754af9/six_1644875935023/work
