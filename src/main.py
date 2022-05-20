@@ -108,7 +108,7 @@ def feature_engineering():
     # print(dataTensor.nelement())
     # print(dataTensor.element_size()*dataTensor.nelement())
 
-def construct_dataset(dataTensor):
+def construct_dataset(batchSize):
     class Dataset(data.Dataset):
         def __init__(self, _dataTensor, labelIndex):
             self._dataTensor = _dataTensor
@@ -141,7 +141,7 @@ def construct_dataset(dataTensor):
             label = self._dataTensor[sym][date][time][startIndex+99][-5+self.labelIndex]
             return data, label
 
-    batch_size = 512
+    dataTensor=feature_engineering()
     labelIndex=0 # 0 for label_5, 1 for label_10, 2 for label_20, 3 for label_40, 4 for label_60
     trainTensor=dataTensor[:,:63]
     validateTensor=dataTensor[:,63:71]
@@ -150,13 +150,13 @@ def construct_dataset(dataTensor):
     validateDataset=Dataset(_dataTensor=validateTensor,labelIndex=labelIndex)
     testDataset=Dataset(_dataTensor=testTensor,labelIndex=labelIndex)
     # print(testDataset)
-    trainLoader = data.DataLoader(dataset=trainDataset, batch_size=batch_size, shuffle=True)
-    validateLoader=data.DataLoader(dataset=validateDataset, batch_size=batch_size, shuffle=True)
-    testLoader=data.DataLoader(dataset=testDataset, batch_size=batch_size, shuffle=True)
+    trainLoader = data.DataLoader(dataset=trainDataset, batch_size=batchSize, shuffle=True)
+    validateLoader=data.DataLoader(dataset=validateDataset, batch_size=batchSize, shuffle=True)
+    testLoader=data.DataLoader(dataset=testDataset, batch_size=batchSize, shuffle=True)
     # print(testLoader.)
     return trainLoader,validateLoader,testLoader
 
-class Deeplob(nn.Module):
+class DeepLob(nn.Module):
     def __init__(self, num_classes):
         super().__init__()
         self.num_classes = num_classes
@@ -237,6 +237,120 @@ class Deeplob(nn.Module):
         forecast_y = torch.softmax(x, dim=1)
         return forecast_y
 
+def train_one_epoch(model:nn.Module, trainLoader:data.DataLoader, criterion, optimizer, scheduler):
+    model.train()
+    losses=torch.zeros(len(trainLoader),dtype=torch.float)
+    TP=0
+    TN=0
+    FP=0
+    FN=0
+    # for index, (input, label) in enumerate(trainDataset):
+    for index,(input, label) in enumerate(tqdm(trainLoader)):
+        output = model(input)
+        loss = criterion(output, label)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        losses[index]=loss
+
+        predictLabel = torch.argmax(output, axis=1)
+        TP+=torch.sum(torch.mul(predictLabel,label))
+        TN+=torch.sum(torch.mul(1-predictLabel,1-label))
+        FP+=torch.sum(torch.mul(predictLabel,1-label))
+        FN+=torch.sum(torch.mul(1-predictLabel,label))
+    scheduler.step()
+    accuracy=(TP+TN)/(TP+TN+FP+FN)
+    precision=TP/(TP+FP)
+    recall=TP/(TP+FN)
+    beta=0.5
+    f_beta=(1+beta**2)*precision*recall/(beta**2*precision+recall)
+    return (torch.sum(losses)/losses.nelement()).item(),f_beta.item(),accuracy.item()
+
+def validate_one_epoch(model:nn.Module, validateLoader:data.DataLoader, criterion):
+    model.eval()
+    losses=torch.zeros(len(validateLoader),dtype=torch.float)
+    TP=0
+    TN=0
+    FP=0
+    FN=0
+    # for index, (input, label) in enumerate(validateDataset):
+    for index, (input, label) in enumerate(tqdm(validateLoader)):
+        output = model(input)
+        loss = criterion(output, label)
+        losses[index]=loss
+        predictLabel = torch.argmax(output, axis=1)
+        TP+=torch.sum(torch.mul(predictLabel,label))
+        TN+=torch.sum(torch.mul(1-predictLabel,1-label))
+        FP+=torch.sum(torch.mul(predictLabel,1-label))
+        FN+=torch.sum(torch.mul(1-predictLabel,label))
+    accuracy=(TP+TN)/(TP+TN+FP+FN)
+    precision=TP/(TP+FP)
+    recall=TP/(TP+FN)
+    beta=0.5
+    f_beta=(1+beta**2)*precision*recall/(beta**2*precision+recall)
+    return (torch.sum(losses)/losses.nelement()).item(),f_beta.item(),accuracy.item()
+
+def get_test_dataset_accuracy(model:nn.Module, testDataset):
+    model.eval()    
+    rightCount = 0
+    totalCount = 0
+    TP=0
+    TN=0
+    FP=0
+    FN=0
+    # for index, (input, label) in enumerate(testDataset):
+    for index, (input, label) in enumerate(tqdm(testDataset)):
+        output = model(input)
+        predictLabel = torch.argmax(output, axis=1)
+        rightCount += torch.sum(predictLabel == label)
+        totalCount += label.shape[0]
+        TP+=torch.sum(torch.mul(predictLabel,label))
+        TN+=torch.sum(torch.mul(1-predictLabel,1-label))
+        FP+=torch.sum(torch.mul(predictLabel,1-label))
+        FN+=torch.sum(torch.mul(1-predictLabel,label))
+    precision=TP/(TP+FP)
+    recall=TP/(TP+FN)
+    F1=2*precision*recall/(precision+recall)
+    return (rightCount / totalCount).item(),F1.item()
+
+def trial(model:nn.Module,modelName,epochs,batchSize,savedName):
+    trainLoader,validateLoader,testLoader=construct_dataset(batchSize=batchSize)
+
+    model.to('cuda')
+    summary(model, (1, 1, 100, 32))
+    
+    criterion=nn.CrossEntropyLoss()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.001, momentum=0.9, weight_decay = 1e-5)
+    optimizer=torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+    scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer,T_max=5,eta_min=1e-6)
+
+    maxBearableEpochs=30
+    noProgressEpochs=0
+    stopEpoch=0
+    currentBestScore=0.0
+    currentBestEpoch=0
+    for epoch in range(epochs):
+        trainLoss,trainScore,trainAccuracy=train_one_epoch(model=model, trainLoader=trainLoader, criterion=criterion,optimizer=optimizer,scheduler=scheduler)
+        validateScore,validateLoss,validateAccuracy=validate_one_epoch(model=model, validateLoader=validateLoader, criterion=criterion)
+        print("epoch:",epoch,"trainLoss:",trainLoss,"trainScore:",trainScore,"trainAccuracy:",trainAccuracy,\
+            "validateLoss:",validateLoss,"validateScore:",validateScore,"validateAccuracy",validateAccuracy,"delta:",validateScore-currentBestScore)
+        # writer.add_scalars(modelName,{'trainScore':trainScore,'validateScore':validateScore,"trainLoss":trainLoss,"validateLoss":validateLoss}, epoch)
+        if validateScore > currentBestScore:
+            currentBestScore=validateScore
+            currentBestEpoch=epoch
+            torch.save(model, "../weight/"+modelName+"/"+savedName)
+            noProgressEpochs=0
+        else:
+            noProgressEpochs+=1
+            if noProgressEpochs>=maxBearableEpochs:
+                stopEpoch=epoch
+                break
+        stopEpoch=epoch
+    testScore=get_test_dataset_accuracy(model,testDataset=testLoader)
+    print("==========================================================================================")
+    print("testScore",testScore,"validateScore",currentBestScore,"bestEpoch",currentBestEpoch,"stopEpoch",stopEpoch)
+    print("==========================================================================================")
+
 def batch_gd(model, criterion, optimizer, train_loader, test_loader, epochs):
     train_losses = np.zeros(epochs)
     test_losses = np.zeros(epochs)
@@ -290,20 +404,9 @@ def batch_gd(model, criterion, optimizer, train_loader, test_loader, epochs):
     torch.save(model, f'../weight/deeplob/final_model_pytorch_sym{sym}_date{dates[-1]}')
     return train_losses, test_losses
 
-def trial():
-    model = Deeplob(num_classes = 3)
-    model.to(device)
-    summary(model, (1, 1, 100, 32))
-
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.001, momentum=0.9, weight_decay = 1e-5)
-
-    train_losses, val_losses = batch_gd(model, criterion, optimizer, train_loader1, val_loader1, epochs=50)
-
 if __name__=='__main__':
-    dataTensor=feature_engineering()
-    construct_dataset(dataTensor=dataTensor)
-    # trial()
+    model=DeepLob(num_classes=3)
+    trial(model=model,modelName="DeepLob",epochs=200,batchSize=512,savedName="1.pth")
     print("All is well!")
 
 
