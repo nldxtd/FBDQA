@@ -1,3 +1,4 @@
+from cmath import log
 import os
 import pandas as pd
 import pickle
@@ -13,15 +14,13 @@ from torchinfo import summary
 import torch.nn as nn
 from torch.utils import data
 import torch.optim as optim
+from torch.utils.tensorboard import SummaryWriter
+
+writer = SummaryWriter(log_dir='../log/tensorboard/')
 
 torch.manual_seed(1024)
 np.random.seed(1024)
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-print(device)
-
-
-# ### 一、数据处理与特征工程
 def feature_engineering():
     columns_need = ['bid1','bsize1',
                     'bid2','bsize2',
@@ -102,46 +101,53 @@ def feature_engineering():
                 # if date not in dataDict[sym].keys():
                     # dataDict[sym][date]={}
                 dataTensor[0][date][timeIndex]=torch.tensor(new_df[columns_need].to_numpy(),dtype=torch.float)
-    print(dataTensor.shape)
-    return dataTensor.to('cuda')
-    # print(dataTensor.element_size())
-    # print(dataTensor.nelement())
-    # print(dataTensor.element_size()*dataTensor.nelement())
+    # print(dataTensor.shape)
+    pickle.dump(dataTensor,open('../data/pkl/1.pkl','wb'))
+    return dataTensor
+
+class Dataset(data.Dataset):
+    def __init__(self, _dataTensor, labelIndex):
+        self._dataTensor = _dataTensor
+        self.labelIndex = labelIndex
+        self.length = 0
+        self.indexToSym=torch.zeros(_dataTensor.nelement(),dtype=torch.int)
+        self.indexToDate=torch.zeros(_dataTensor.nelement(),dtype=torch.int)
+        self.indexToTime=torch.zeros(_dataTensor.nelement(),dtype=torch.int)
+        self.indexToStartIndex=torch.zeros(_dataTensor.nelement(),dtype=torch.int)
+        for sym in range(self._dataTensor.shape[0]):
+            for date in range(self._dataTensor.shape[1]):
+                for time in range(self._dataTensor.shape[2]):
+                    if torch.sum(self._dataTensor[sym][date][time]).item() != 0:
+                        for startIndex in range(1900):
+                            self.indexToSym[self.length]=sym
+                            self.indexToDate[self.length]=date
+                            self.indexToTime[self.length]=time
+                            self.indexToStartIndex[self.length]=startIndex
+                            self.length+=1
+                    else:
+                        print(sym,date,time)
+    def __len__(self):
+        return self.length
+    def __getitem__(self, index):
+        sym = self.indexToSym[index]
+        date = self.indexToDate[index]
+        time = self.indexToTime[index]
+        startIndex = self.indexToStartIndex[index]
+        data = self._dataTensor[sym][date][time][startIndex:startIndex+100,:-5]
+        label = self._dataTensor[sym][date][time][startIndex+99][-5+self.labelIndex]
+        # print(label)
+        # print(data.shape)
+        # print(label.shape)
+        # fsdhjk
+        return data,label.to(torch.long)
 
 def construct_dataset(batchSize):
-    class Dataset(data.Dataset):
-        def __init__(self, _dataTensor, labelIndex):
-            self._dataTensor = _dataTensor
-            self.labelIndex = labelIndex
-            self.length = 0
-            self.indexToSym=torch.zeros(_dataTensor.nelement(),dtype=torch.int)
-            self.indexToDate=torch.zeros(_dataTensor.nelement(),dtype=torch.int)
-            self.indexToTime=torch.zeros(_dataTensor.nelement(),dtype=torch.int)
-            self.indexToStartIndex=torch.zeros(_dataTensor.nelement(),dtype=torch.int)
-            for sym in range(self._dataTensor.shape[0]):
-                for date in range(self._dataTensor.shape[1]):
-                    for time in range(self._dataTensor.shape[2]):
-                        if torch.sum(self._dataTensor[sym][date][time]).item() != 0:
-                            for startIndex in range(1900):
-                                self.indexToSym[self.length]=sym
-                                self.indexToDate[self.length]=date
-                                self.indexToTime[self.length]=time
-                                self.indexToStartIndex[self.length]=startIndex
-                                self.length+=1
-                        else:
-                            print(sym,date,time)
-        def __len__(self):
-            return self.length
-        def __getitem__(self, index):
-            sym = self.indexToSym[index]
-            date = self.indexToDate[index]
-            time = self.indexToTime[index]
-            startIndex = self.indexToStartIndex[index]
-            data = self._dataTensor[sym][date][time][startIndex:startIndex+100,:-5]
-            label = self._dataTensor[sym][date][time][startIndex+99][-5+self.labelIndex]
-            return data, label
-
-    dataTensor=feature_engineering()
+    if os.path.exists('../data/pkl/1.pkl'):
+        dataTensor = pickle.load(open('../data/pkl/1.pkl','rb'))
+    else:
+        dataTensor=feature_engineering()
+    dataTensor=dataTensor.to('cuda')
+    # print(dataTensor.device)
     labelIndex=0 # 0 for label_5, 1 for label_10, 2 for label_20, 3 for label_40, 4 for label_60
     trainTensor=dataTensor[:,:63]
     validateTensor=dataTensor[:,63:71]
@@ -223,6 +229,7 @@ class DeepLob(nn.Module):
         self.fc = nn.Sequential(nn.Linear(384, 64),nn.Linear(64, self.num_classes))
 
     def forward(self, x):
+        x=torch.unsqueeze(x,1)
         x = self.conv1(x)
         x = self.conv2(x)
         x = self.conv3(x)
@@ -239,11 +246,11 @@ class DeepLob(nn.Module):
 
 def train_one_epoch(model:nn.Module, trainLoader:data.DataLoader, criterion, optimizer, scheduler):
     model.train()
-    losses=torch.zeros(len(trainLoader),dtype=torch.float)
     TP=0
     TN=0
     FP=0
     FN=0
+    losses=torch.zeros(len(trainLoader),dtype=torch.float)
     # for index, (input, label) in enumerate(trainDataset):
     for index,(input, label) in enumerate(tqdm(trainLoader)):
         output = model(input)
@@ -254,10 +261,12 @@ def train_one_epoch(model:nn.Module, trainLoader:data.DataLoader, criterion, opt
         losses[index]=loss
 
         predictLabel = torch.argmax(output, axis=1)
-        TP+=torch.sum(torch.mul(predictLabel,label))
-        TN+=torch.sum(torch.mul(1-predictLabel,1-label))
-        FP+=torch.sum(torch.mul(predictLabel,1-label))
-        FN+=torch.sum(torch.mul(1-predictLabel,label))
+        TP+=(torch.sum(torch.mul(predictLabel==2,label==2))+torch.sum(torch.mul(predictLabel==0,label==0)))
+        TN+=torch.sum(torch.mul(predictLabel==1,label==1))
+        FP+=(torch.sum(torch.mul(predictLabel==2,label!=2))+torch.sum(torch.mul(predictLabel==0,label!=0)))
+        FN+=(torch.sum(torch.mul(predictLabel!=2,label==2))+torch.sum(torch.mul(predictLabel!=0,label==0)))
+
+        # writer.add_scalars(modelName,{'trainScore':trainScore,'validateScore':validateScore,"trainLoss":trainLoss,"validateLoss":validateLoss}, epoch)
     scheduler.step()
     accuracy=(TP+TN)/(TP+TN+FP+FN)
     precision=TP/(TP+FP)
@@ -267,28 +276,29 @@ def train_one_epoch(model:nn.Module, trainLoader:data.DataLoader, criterion, opt
     return (torch.sum(losses)/losses.nelement()).item(),f_beta.item(),accuracy.item()
 
 def validate_one_epoch(model:nn.Module, validateLoader:data.DataLoader, criterion):
-    model.eval()
-    losses=torch.zeros(len(validateLoader),dtype=torch.float)
-    TP=0
-    TN=0
-    FP=0
-    FN=0
-    # for index, (input, label) in enumerate(validateDataset):
-    for index, (input, label) in enumerate(tqdm(validateLoader)):
-        output = model(input)
-        loss = criterion(output, label)
-        losses[index]=loss
-        predictLabel = torch.argmax(output, axis=1)
-        TP+=torch.sum(torch.mul(predictLabel,label))
-        TN+=torch.sum(torch.mul(1-predictLabel,1-label))
-        FP+=torch.sum(torch.mul(predictLabel,1-label))
-        FN+=torch.sum(torch.mul(1-predictLabel,label))
-    accuracy=(TP+TN)/(TP+TN+FP+FN)
-    precision=TP/(TP+FP)
-    recall=TP/(TP+FN)
-    beta=0.5
-    f_beta=(1+beta**2)*precision*recall/(beta**2*precision+recall)
-    return (torch.sum(losses)/losses.nelement()).item(),f_beta.item(),accuracy.item()
+    # model.eval()
+    with torch.no_grad():
+        TP=0
+        TN=0
+        FP=0
+        FN=0
+        losses=torch.zeros(len(validateLoader),dtype=torch.float)
+        # for index, (input, label) in enumerate(validateDataset):
+        for index, (input, label) in enumerate(tqdm(validateLoader)):
+            output = model(input)
+            loss = criterion(output, label)
+            losses[index]=loss
+            predictLabel = torch.argmax(output, axis=1)
+            TP+=(torch.sum(torch.mul(predictLabel==2,label==2))+torch.sum(torch.mul(predictLabel==0,label==0)))
+            TN+=torch.sum(torch.mul(predictLabel==1,label==1))
+            FP+=(torch.sum(torch.mul(predictLabel==2,label!=2))+torch.sum(torch.mul(predictLabel==0,label!=0)))
+            FN+=(torch.sum(torch.mul(predictLabel!=2,label==2))+torch.sum(torch.mul(predictLabel!=0,label==0)))
+        accuracy=(TP+TN)/(TP+TN+FP+FN)
+        precision=TP/(TP+FP)
+        recall=TP/(TP+FN)
+        beta=0.5
+        f_beta=(1+beta**2)*precision*recall/(beta**2*precision+recall)
+        return (torch.sum(losses)/losses.nelement()).item(),f_beta.item(),accuracy.item()
 
 def get_test_dataset_accuracy(model:nn.Module, testDataset):
     model.eval()    
@@ -317,10 +327,10 @@ def trial(model:nn.Module,modelName,epochs,batchSize,savedName):
     trainLoader,validateLoader,testLoader=construct_dataset(batchSize=batchSize)
 
     model.to('cuda')
-    summary(model, (1, 1, 100, 32))
+    # summary(model, (1, 1, 100, 32))
     
     criterion=nn.CrossEntropyLoss()
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.001, momentum=0.9, weight_decay = 1e-5)
+    # optimizer = torch.optim.SGD(model.parameters(), lr=0.001, momentum=0.9, weight_decay = 1e-5)
     optimizer=torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
     scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer,T_max=5,eta_min=1e-6)
 
@@ -331,10 +341,10 @@ def trial(model:nn.Module,modelName,epochs,batchSize,savedName):
     currentBestEpoch=0
     for epoch in range(epochs):
         trainLoss,trainScore,trainAccuracy=train_one_epoch(model=model, trainLoader=trainLoader, criterion=criterion,optimizer=optimizer,scheduler=scheduler)
-        validateScore,validateLoss,validateAccuracy=validate_one_epoch(model=model, validateLoader=validateLoader, criterion=criterion)
+        validateLoss,validateScore,validateAccuracy=validate_one_epoch(model=model, validateLoader=validateLoader, criterion=criterion)
         print("epoch:",epoch,"trainLoss:",trainLoss,"trainScore:",trainScore,"trainAccuracy:",trainAccuracy,\
             "validateLoss:",validateLoss,"validateScore:",validateScore,"validateAccuracy",validateAccuracy,"delta:",validateScore-currentBestScore)
-        # writer.add_scalars(modelName,{'trainScore':trainScore,'validateScore':validateScore,"trainLoss":trainLoss,"validateLoss":validateLoss}, epoch)
+        writer.add_scalars(modelName,{'trainScore':trainScore,'validateScore':validateScore,"trainLoss":trainLoss,"validateLoss":validateLoss}, epoch)
         if validateScore > currentBestScore:
             currentBestScore=validateScore
             currentBestEpoch=epoch
@@ -351,62 +361,11 @@ def trial(model:nn.Module,modelName,epochs,batchSize,savedName):
     print("testScore",testScore,"validateScore",currentBestScore,"bestEpoch",currentBestEpoch,"stopEpoch",stopEpoch)
     print("==========================================================================================")
 
-def batch_gd(model, criterion, optimizer, train_loader, test_loader, epochs):
-    train_losses = np.zeros(epochs)
-    test_losses = np.zeros(epochs)
-    best_test_loss = np.inf
-    best_test_epoch = 0
-
-    for it in tqdm(range(epochs)):
-        if ((epochs+1) % 10 == 0):
-            optimizer.lr = optimizer.lr*0.5
-        model.train()
-        t0 = datetime.now()
-        train_loss = []
-        for inputs, targets in train_loader:
-            optimizer.zero_grad()
-            
-            outputs = model(inputs)
-
-            loss = criterion(outputs, targets)
-
-            loss.backward()
-            
-            optimizer.step()
-            
-            train_loss.append(loss.item())
-            
-        # Get train loss and test loss
-        train_loss = np.mean(train_loss) # a little misleading
-    
-        model.eval()
-        test_loss = []
-        for inputs, targets in test_loader:
-            inputs, targets = inputs.to(device, dtype=torch.float), targets.to(device, dtype=torch.int64)      
-            outputs = model(inputs)
-            loss = criterion(outputs, targets)
-            test_loss.append(loss.item())
-        test_loss = np.mean(test_loss)
-
-        # Save losses
-        train_losses[it] = train_loss
-        test_losses[it] = test_loss
-        
-        if test_loss < best_test_loss:
-            torch.save(model, f'../weight/deeplob/best_val_model_pytorch_sym{sym}_date{dates[-1]}')
-            best_test_loss = test_loss
-            best_test_epoch = it
-            print('model saved')
-
-        dt = datetime.now() - t0
-        print(f'Epoch {it+1}/{epochs}, Train Loss: {train_loss:.4f}, \
-          Validation Loss: {test_loss:.4f}, Duration: {dt}, Best Val Epoch: {best_test_epoch}')
-    torch.save(model, f'../weight/deeplob/final_model_pytorch_sym{sym}_date{dates[-1]}')
-    return train_losses, test_losses
-
 if __name__=='__main__':
     model=DeepLob(num_classes=3)
     trial(model=model,modelName="DeepLob",epochs=200,batchSize=512,savedName="1.pth")
+
     print("All is well!")
+    writer.close()
 
 
