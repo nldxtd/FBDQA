@@ -32,14 +32,15 @@ def feature_engineering():
                     'ask3','asize3',
                     'ask4','asize4',
                     'ask5','asize5',
+                    'relatime', 'sym',
                     'spread1','mid_price1',
                     'spread2','mid_price2',
                     'spread3','mid_price3',
                     'weighted_ab1','weighted_ab2','weighted_ab3','amount',
                     'vol1_rel_diff','volall_rel_diff','label_5','label_10','label_20','label_40','label_60', 
                 ]
-    dataTensor=torch.zeros(1,79,2,1999,37,dtype=torch.float)
-    for sym in [4,]:
+    dataTensor=torch.zeros(10,79,2,1999,39,dtype=torch.float)
+    for sym in range(10):
         for date in range(79):
             for timeIndex, time in enumerate(['am', 'pm']):  
                 filePath = f"../data/raw/snapshot_sym{sym}_date{date}_{time}.csv"
@@ -75,6 +76,9 @@ def feature_engineering():
                 new_df['relative_spread1'] = new_df['spread1'] / new_df['mid_price1']
                 new_df['relative_spread2'] = new_df['spread2'] / new_df['mid_price2']
                 new_df['relative_spread3'] = new_df['spread3'] / new_df['mid_price3']
+
+                # 时间特征
+                new_df['relatime'] = pd.to_datetime(new_df["time"]).map(lambda x: ((x.hour-9)+(x.minute*60+x.second)/3600))
                 
                 # 对量取对数
                 new_df['bsize1'] = (new_df['n_bsize1']*10000).map(np.log1p)
@@ -100,9 +104,9 @@ def feature_engineering():
                     # dataDict[sym]={}
                 # if date not in dataDict[sym].keys():
                     # dataDict[sym][date]={}
-                dataTensor[0][date][timeIndex]=torch.tensor(new_df[columns_need].to_numpy(),dtype=torch.float)
+                dataTensor[sym][date][timeIndex]=torch.tensor(new_df[columns_need].to_numpy(),dtype=torch.float)
     # print(dataTensor.shape)
-    pickle.dump(dataTensor,open('../data/pkl/1.pkl','wb'))
+    pickle.dump(dataTensor,open('../data/pkl/all.pkl','wb'))
     return dataTensor
 
 class Dataset(data.Dataset):
