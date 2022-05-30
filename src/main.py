@@ -16,7 +16,7 @@ from torch.utils import data
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 
-writer = SummaryWriter(log_dir='../log/tensorboard/')
+writer = SummaryWriter(log_dir='../log/tensorboard/',comment='_'+datetime.now().strftime('%Y-%m-%d_%H-%M-%S'))
 
 torch.manual_seed(1024)
 np.random.seed(1024)
@@ -152,6 +152,10 @@ def construct_dataset(batchSize):
     trainTensor=dataTensor[:,:63]
     validateTensor=dataTensor[:,63:71]
     testTensor=dataTensor[:,71:]
+    # print(trainTensor.shape)
+    # print(validateTensor.shape)
+    # print(testTensor.shape)
+    # fdshkj
     trainDataset = Dataset(_dataTensor=trainTensor,labelIndex=labelIndex)
     validateDataset=Dataset(_dataTensor=validateTensor,labelIndex=labelIndex)
     testDataset=Dataset(_dataTensor=testTensor,labelIndex=labelIndex)
@@ -276,29 +280,29 @@ def train_one_epoch(model:nn.Module, trainLoader:data.DataLoader, criterion, opt
     return (torch.sum(losses)/losses.nelement()).item(),f_beta.item(),accuracy.item()
 
 def validate_one_epoch(model:nn.Module, validateLoader:data.DataLoader, criterion):
-    # model.eval()
-    with torch.no_grad():
-        TP=0
-        TN=0
-        FP=0
-        FN=0
-        losses=torch.zeros(len(validateLoader),dtype=torch.float)
-        # for index, (input, label) in enumerate(validateDataset):
-        for index, (input, label) in enumerate(tqdm(validateLoader)):
-            output = model(input)
-            loss = criterion(output, label)
-            losses[index]=loss
-            predictLabel = torch.argmax(output, axis=1)
-            TP+=(torch.sum(torch.mul(predictLabel==2,label==2))+torch.sum(torch.mul(predictLabel==0,label==0)))
-            TN+=torch.sum(torch.mul(predictLabel==1,label==1))
-            FP+=(torch.sum(torch.mul(predictLabel==2,label!=2))+torch.sum(torch.mul(predictLabel==0,label!=0)))
-            FN+=(torch.sum(torch.mul(predictLabel!=2,label==2))+torch.sum(torch.mul(predictLabel!=0,label==0)))
-        accuracy=(TP+TN)/(TP+TN+FP+FN)
-        precision=TP/(TP+FP)
-        recall=TP/(TP+FN)
-        beta=0.5
-        f_beta=(1+beta**2)*precision*recall/(beta**2*precision+recall)
-        return (torch.sum(losses)/losses.nelement()).item(),f_beta.item(),accuracy.item()
+    model.eval()
+    # with torch.no_grad():
+    TP=0
+    TN=0
+    FP=0
+    FN=0
+    # losses=torch.zeros(len(validateLoader),dtype=torch.float)
+    # for index, (input, label) in enumerate(validateDataset):
+    for (input, label) in tqdm(validateLoader):
+        output = model(input)
+        # loss = criterion(output, label)
+        # losses[index]=loss
+        predictLabel = torch.argmax(output, axis=1)
+        TP+=(torch.sum(torch.mul(predictLabel==2,label==2))+torch.sum(torch.mul(predictLabel==0,label==0)))
+        TN+=torch.sum(torch.mul(predictLabel==1,label==1))
+        FP+=(torch.sum(torch.mul(predictLabel==2,label!=2))+torch.sum(torch.mul(predictLabel==0,label!=0)))
+        FN+=(torch.sum(torch.mul(predictLabel!=2,label==2))+torch.sum(torch.mul(predictLabel!=0,label==0)))
+    accuracy=(TP+TN)/(TP+TN+FP+FN)
+    precision=TP/(TP+FP)
+    recall=TP/(TP+FN)
+    beta=0.5
+    f_beta=(1+beta**2)*precision*recall/(beta**2*precision+recall)
+    return f_beta.item(),accuracy.item() #(torch.sum(losses)/losses.nelement()).item(),
 
 def get_test_dataset_accuracy(model:nn.Module, testDataset):
     model.eval()    
@@ -341,10 +345,10 @@ def trial(model:nn.Module,modelName,epochs,batchSize,savedName):
     currentBestEpoch=0
     for epoch in range(epochs):
         trainLoss,trainScore,trainAccuracy=train_one_epoch(model=model, trainLoader=trainLoader, criterion=criterion,optimizer=optimizer,scheduler=scheduler)
-        validateLoss,validateScore,validateAccuracy=validate_one_epoch(model=model, validateLoader=validateLoader, criterion=criterion)
+        validateScore,validateAccuracy=validate_one_epoch(model=model, validateLoader=validateLoader, criterion=criterion) #validateLoss,
         print("epoch:",epoch,"trainLoss:",trainLoss,"trainScore:",trainScore,"trainAccuracy:",trainAccuracy,\
-            "validateLoss:",validateLoss,"validateScore:",validateScore,"validateAccuracy",validateAccuracy,"delta:",validateScore-currentBestScore)
-        writer.add_scalars(modelName,{'trainScore':trainScore,'validateScore':validateScore,"trainLoss":trainLoss,"validateLoss":validateLoss}, epoch)
+            "validateLoss:",validateScore,"validateAccuracy",validateAccuracy,"delta:",validateScore-currentBestScore) # validateLoss,"validateScore:",
+        writer.add_scalars(modelName,{'trainScore':trainScore,'validateScore':validateScore,"trainLoss":trainLoss,}, epoch) #"validateLoss":validateLoss
         if validateScore > currentBestScore:
             currentBestScore=validateScore
             currentBestEpoch=epoch
