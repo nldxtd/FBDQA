@@ -6,6 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
 from tqdm import tqdm 
+import random
 
 import torch
 import torch.nn.functional as F
@@ -20,6 +21,7 @@ writer = SummaryWriter()
 
 torch.manual_seed(1024)
 np.random.seed(1024)
+random.seed(1024)
 
 def feature_engineering():
     columns_need = ['bid1','bsize1',
@@ -166,6 +168,43 @@ def construct_dataset(batchSize):
     # print(testLoader.)
     return trainLoader,validateLoader,testLoader
 
+class MLP(nn.Module):
+    def __init__(self,num_classes):
+        super().__init__()
+        self.net = nn.Linear(3200, num_classes)
+        # self.net = nn.Sequential(nn.Linear(3200, 64),nn.ReLU(),nn.Linear(64, num_classes))
+        def init_weight(m):
+            if type(m) == nn.Linear:
+                nn.init.uniform_(m.weight)
+        self.net.apply(init_weight)
+    def forward(self, x):        
+        x=torch.flatten(x,start_dim=1)
+        x=self.net(x)
+        x=torch.softmax(x,dim=1)
+        return x
+
+class LSTM(nn.Module):
+    def __init__(self,num_classes):
+        super().__init__()
+        self.lstm = nn.LSTM(input_size=32, hidden_size=64, num_layers=1, batch_first=True)
+        self.fc = nn.Sequential(nn.Linear(64, 64),nn.ReLU(),nn.Linear(64, num_classes))
+    def forward(self, x):
+        x,_ = self.lstm(x)
+        x = self.fc(x[:, -1, :])
+        x = torch.softmax(x, dim=1)
+        return x
+
+class GRU(nn.Module):
+    def __init__(self,num_classes):
+        super().__init__()
+        self.gru = nn.GRU(input_size=32, hidden_size=64, num_layers=1, batch_first=True)
+        self.fc = nn.Linear(64, num_classes)
+    def forward(self, x):
+        x,_ = self.gru(x)
+        x = self.fc(x[:, -1, :])
+        x = torch.softmax(x, dim=1)
+        return x
+
 class DeepLob(nn.Module):
     def __init__(self, num_classes):
         super().__init__()
@@ -228,9 +267,9 @@ class DeepLob(nn.Module):
             nn.BatchNorm2d(16),
         )
         # lstm layers
-        # self.lstm = nn.LSTM(input_size=192, hidden_size=64, num_layers=1, batch_first=True)
-        # self.fc1 = nn.Linear(64, self.y_len)
-        self.fc = nn.Sequential(nn.Linear(384, 64),nn.Linear(64, self.num_classes))
+        self.lstm = nn.LSTM(input_size=48, hidden_size=64, num_layers=1, batch_first=True)
+        self.fc1 = nn.Linear(64, self.num_classes)
+        self.fc = nn.Sequential(nn.Linear(384, 64),nn.ReLU(),nn.Linear(64, self.num_classes))
 
     def forward(self, x):
         x=torch.unsqueeze(x,1)
@@ -242,11 +281,90 @@ class DeepLob(nn.Module):
         x_inp2 = self.inp2(x)
         x_inp3 = self.inp3(x)
 
+        # lstm head
         x = torch.cat((x_inp1, x_inp2, x_inp3), dim=1)
-        x = x.reshape(-1,48*8)
-        x = self.fc(x)
-        forecast_y = torch.softmax(x, dim=1)
-        return forecast_y
+        x=torch.squeeze(torch.transpose(x,1,2))
+        x, _ = self.lstm(x)
+        x = self.fc1(x[:, -1, :])
+
+        # MLP head
+        # x = x.reshape(-1,48*8)
+        # x = self.fc(x)
+
+        x = torch.softmax(x, dim=1)
+        return x
+
+class Transformer(nn.Module):
+    import math
+from typing import Tuple
+
+import torch
+from torch import nn, Tensor
+import torch.nn.functional as F
+from torch.nn import TransformerEncoder, TransformerEncoderLayer
+from torch.utils.data import dataset
+
+class TransformerModel(nn.Module):
+
+    def __init__(self, ntoken: int, d_model: int, nhead: int, d_hid: int,
+                 nlayers: int, dropout: float = 0.5):
+        super().__init__()
+        self.model_type = 'Transformer'
+        self.pos_encoder = PositionalEncoding(d_model, dropout)
+        encoder_layers = TransformerEncoderLayer(d_model, nhead, d_hid, dropout)
+        self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
+        self.encoder = nn.Embedding(ntoken, d_model)
+        self.d_model = d_model
+        self.decoder = nn.Linear(d_model, ntoken)
+
+        self.init_weights()
+
+    def init_weights(self) -> None:
+        initrange = 0.1
+        self.encoder.weight.data.uniform_(-initrange, initrange)
+        self.decoder.bias.data.zero_()
+        self.decoder.weight.data.uniform_(-initrange, initrange)
+
+    def forward(self, src: Tensor, src_mask: Tensor) -> Tensor:
+        """
+        Args:
+            src: Tensor, shape [seq_len, batch_size]
+            src_mask: Tensor, shape [seq_len, seq_len]
+
+        Returns:
+            output Tensor of shape [seq_len, batch_size, ntoken]
+        """
+        src = self.encoder(src) * math.sqrt(self.d_model)
+        src = self.pos_encoder(src)
+        output = self.transformer_encoder(src, src_mask)
+        output = self.decoder(output)
+        return output
+
+
+def generate_square_subsequent_mask(sz: int) -> Tensor:
+    """Generates an upper-triangular matrix of -inf, with zeros on diag."""
+    return torch.triu(torch.ones(sz, sz) * float('-inf'), diagonal=1)
+
+class PositionalEncoding(nn.Module):
+
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, 1, d_model)
+        pe[:, 0, 0::2] = torch.sin(position * div_term)
+        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x: Tensor) -> Tensor:
+        """
+        Args:
+            x: Tensor, shape [seq_len, batch_size, embedding_dim]
+        """
+        x = x + self.pe[:x.size(0)]
+        return self.dropout(x)
 
 def train_one_epoch(model:nn.Module, trainLoader:data.DataLoader, criterion, optimizer, scheduler):
     model.train()
@@ -271,11 +389,14 @@ def train_one_epoch(model:nn.Module, trainLoader:data.DataLoader, criterion, opt
         totalCount+=label.shape[0]
         # writer.add_scalars('DeepLob',{'trainScore':trainScore,'validateScore':validateScore,"trainLoss":trainLoss,"validateLoss":validateLoss}, epoch)
     scheduler.step()
-    precision=TP/(TP+FP)
-    recall=TP/(TP+FN)
+    if TP==0:
+        f_beta=torch.tensor([0],dtype=torch.float32,device='cuda')
+    else:
+        precision=TP/(TP+FP)
+        recall=TP/(TP+FN)
+        beta=0.5
+        f_beta=(1+beta**2)*precision*recall/(beta**2*precision+recall)
     accuracy=rightCount/totalCount
-    beta=0.5
-    f_beta=(1+beta**2)*precision*recall/(beta**2*precision+recall)
     return (torch.sum(losses)/losses.nelement()).item(),f_beta.item(),accuracy.item()
 
 def validate_one_epoch(model:nn.Module, validateLoader:data.DataLoader):
@@ -292,25 +413,28 @@ def validate_one_epoch(model:nn.Module, validateLoader:data.DataLoader):
         FN+=(torch.sum(torch.mul(predictLabel!=2,label==2))+torch.sum(torch.mul(predictLabel!=0,label==0)))
         rightCount+=torch.sum(predictLabel==label)
         totalCount+=label.shape[0]
-    precision=TP/(TP+FP)
-    recall=TP/(TP+FN)
+    if TP==0:
+        f_beta=torch.tensor([0],dtype=torch.float32,device='cuda')
+    else:
+        precision=TP/(TP+FP)
+        recall=TP/(TP+FN)
+        beta=0.5
+        f_beta=(1+beta**2)*precision*recall/(beta**2*precision+recall)
     accuracy=rightCount/totalCount
-    beta=0.5
-    f_beta=(1+beta**2)*precision*recall/(beta**2*precision+recall)
     return f_beta.item(),accuracy.item()
 
 def trial(model:nn.Module,modelName,epochs,batchSize,savedName):
     trainLoader,validateLoader,testLoader=construct_dataset(batchSize=batchSize)
 
     model.to('cuda')
-    # summary(model, (1, 1, 100, 32))
+    # summary(model, (512, 100, 32))
     
     criterion=nn.CrossEntropyLoss()
     # optimizer = torch.optim.SGD(model.parameters(), lr=0.001, momentum=0.9, weight_decay = 1e-5)
     optimizer=torch.optim.Adam(model.parameters(), lr=1e-2, weight_decay=1e-5)
     scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer,T_max=5,eta_min=1e-6)
 
-    maxBearableEpochs=20
+    maxBearableEpochs=30
     noProgressEpochs=0
     stopEpoch=0
     currentBestScore=0.0
@@ -332,14 +456,23 @@ def trial(model:nn.Module,modelName,epochs,batchSize,savedName):
                 stopEpoch=epoch
                 break
         stopEpoch=epoch
-    testScore,testAccuracy=validate_one_epoch(model,testDataset=testLoader)
+    testScore,testAccuracy=validate_one_epoch(model,validateLoader=testLoader)
     print("==========================================================================================")
     print("testScore",testScore,"validateScore",currentBestScore,"bestEpoch",currentBestEpoch,"stopEpoch",stopEpoch)
     print("==========================================================================================")
 
 if __name__=='__main__':
-    model=DeepLob(num_classes=3)
-    trial(model=model,modelName="DeepLob",epochs=200,batchSize=512,savedName="5.pth")
+    model=MLP(num_classes=3)
+    trial(model=model,modelName="MLP",epochs=200,batchSize=512,savedName="3.pth")
+
+    # model=LSTM(num_classes=3)
+    # trial(model=model,modelName="LSTM",epochs=200,batchSize=512,savedName="3.pth")
+
+    # model=GRU(num_classes=3)
+    # trial(model=model,modelName="GRU",epochs=200,batchSize=512,savedName="2.pth")
+
+    # model=DeepLob(num_classes=3)
+    # trial(model=model,modelName="DeepLob",epochs=200,batchSize=512,savedName="8.pth")
 
     print("All is well!")
     writer.close()
