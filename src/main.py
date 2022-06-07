@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 from tqdm import tqdm 
 import random
+import math
+from typing import Tuple
 
 import torch
 import torch.nn.functional as F
@@ -15,6 +17,9 @@ from torchinfo import summary
 import torch.nn as nn
 from torch.utils import data
 import torch.optim as optim
+from torch import nn, Tensor
+from torch.nn import TransformerEncoder, TransformerEncoderLayer
+from torch.utils.data import dataset
 from torch.utils.tensorboard import SummaryWriter
 
 writer = SummaryWriter()
@@ -294,22 +299,39 @@ class DeepLob(nn.Module):
         x = torch.softmax(x, dim=1)
         return x
 
+class PositionalEncoding(nn.Module):
+
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, 1, d_model)
+        pe[:, 0, 0::2] = torch.sin(position * div_term)
+        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x: Tensor) -> Tensor:
+        """
+        Args:
+            x: Tensor, shape [seq_len, batch_size, embedding_dim]
+        """
+        x = x + self.pe[:x.size(0)]
+        return self.dropout(x)
+
 class Transformer(nn.Module):
-    import math
-from typing import Tuple
-
-import torch
-from torch import nn, Tensor
-import torch.nn.functional as F
-from torch.nn import TransformerEncoder, TransformerEncoderLayer
-from torch.utils.data import dataset
-
-class TransformerModel(nn.Module):
-
+    
     def __init__(self, ntoken: int, d_model: int, nhead: int, d_hid: int,
                  nlayers: int, dropout: float = 0.5):
         super().__init__()
-        self.model_type = 'Transformer'
+        # transformer_model = nn.Transformer(d_model=32,nhead=8, num_encoder_layers=6,num_decoder_layers=6, 
+            # dim_feedforward=64, dropout=0.1,batch_first=True)
+        # src = torch.rand((10, 32, 512))
+        # tgt = torch.rand((20, 32, 512))
+        # out = transformer_model(src, tgt)
+        # transformer_model.encoder
+        # transformer_model.decoder
+        # self.model_type = 'Transformer'
         self.pos_encoder = PositionalEncoding(d_model, dropout)
         encoder_layers = TransformerEncoderLayer(d_model, nhead, d_hid, dropout)
         self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
@@ -340,31 +362,11 @@ class TransformerModel(nn.Module):
         output = self.decoder(output)
         return output
 
-
 def generate_square_subsequent_mask(sz: int) -> Tensor:
     """Generates an upper-triangular matrix of -inf, with zeros on diag."""
     return torch.triu(torch.ones(sz, sz) * float('-inf'), diagonal=1)
 
-class PositionalEncoding(nn.Module):
 
-    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
-        super().__init__()
-        self.dropout = nn.Dropout(p=dropout)
-
-        position = torch.arange(max_len).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
-        pe = torch.zeros(max_len, 1, d_model)
-        pe[:, 0, 0::2] = torch.sin(position * div_term)
-        pe[:, 0, 1::2] = torch.cos(position * div_term)
-        self.register_buffer('pe', pe)
-
-    def forward(self, x: Tensor) -> Tensor:
-        """
-        Args:
-            x: Tensor, shape [seq_len, batch_size, embedding_dim]
-        """
-        x = x + self.pe[:x.size(0)]
-        return self.dropout(x)
 
 def train_one_epoch(model:nn.Module, trainLoader:data.DataLoader, criterion, optimizer, scheduler):
     model.train()
